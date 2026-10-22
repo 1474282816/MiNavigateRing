@@ -1,0 +1,17 @@
+{
+  "runId": "minavigate-ring-20261012",
+  "scope": "phone-and-band-interface-design",
+  "localArtifacts": {
+    "preview": "index.html",
+    "data": "design-data.json",
+    "phoneScreens": 9,
+    "bandStates": 20,
+    "navigationIcons": 14,
+    "designVersion": "1.1"
+  },
+  "validation": {
+    "sceneContainerBounds": "passed",
+    "browserVisualReview": "performed",
+    "deviceValidation": "not-run"
+  }
+}

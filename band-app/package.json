@@ -1,0 +1,11 @@
+{
+  "name": "minavigatering-band-probe",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "build": "aiot build"
+  },
+  "devDependencies": {
+    "aiot-toolkit": "2.0.5"
+  }
+}

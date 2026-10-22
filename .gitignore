@@ -1,0 +1,16 @@
+.coagent-worktrees/
+.gradle/
+**/build/
+local.properties
+node_modules/
+.env
+.env.*
+*.jks
+*.keystore
+*.pem
+*.p12
+device-evidence/private/
+app/signing/signing.local.properties
+.temp_band-app/
+# Xiaomi wearable SDK: third-party file, not redistributed here (see docs/sdk-provenance.md)
+app/libs/*.aar

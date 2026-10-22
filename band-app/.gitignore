@@ -1,0 +1,10 @@
+node_modules/
+dist/
+build/
+sign/
+package-lock.json
+*.rpk
+*.png
+
+# Product navigation assets are source resources; generated launcher logo remains ignored.
+!src/common/images/*.png

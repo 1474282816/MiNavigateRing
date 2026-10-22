@@ -1,0 +1,423 @@
+<template>
+  <div class="page">
+    <image class="nav-icon" src="{{ iconSrc }}" if="{{ iconVisible }}"></image>
+    <text class="title" onlongpress="toggleDebug">{{ title }}</text>
+    <div class="diag" if="{{ debugVisible }}">
+      <text class="diag-line">ready {{ diagReady }}</text>
+      <text class="diag-line">诊断 {{ diagStatus }}</text>
+      <text class="diag-line">入帧 {{ inboundSummary }}</text>
+      <text class="diag-line">链路 {{ linkEvent }}</text>
+      <text class="diag-line">生命周期 {{ lifeText }}</text>
+      <text class="diag-line">性能 {{ perfText }}</text>
+    </div>
+    <text class="distance distance-short" if="{{ distanceShortVisible }}">{{ distanceText }}</text>
+    <text class="distance" if="{{ distanceLongVisible }}">{{ distanceText }}</text>
+    <text class="road" if="{{ roadVisible }}">{{ roadName }}</text>
+    <text class="exit" if="{{ exitVisible }}">{{ exitLabel }}</text>
+  </div>
+</template>
+
+<script>
+const TICK_INTERVAL_MS = 1000;
+const ACTION_LABELS = require("../../common/codec").ACTION_LABELS;
+
+// Official memory advice (https://iot.mi.com/vela/quickapp/zh/guide/best-practice/memory.html):
+// a page object should be updated in place and must not be reassigned when the
+// value did not change, because every data assignment notifies the observer and
+// costs a repaint. One module-level helper keeps that rule in a single place
+// for applyDisplay and applyAbnormal.
+function setIfChanged(page, key, value) {
+  if (page[key] !== value) {
+    page[key] = value;
+  }
+}
+
+// title -> action id, built exactly once at module load. The old tick ran
+// Object.keys(...).filter(...) over all 14 labels on every repaint; a reverse
+// table makes it one lookup and allocates nothing per tick.
+function buildActionByTitle(labels) {
+  const map = Object.create(null);
+  Object.keys(labels).forEach((id) => {
+    map[labels[id]] = id;
+  });
+  return map;
+}
+
+const ACTION_BY_TITLE = buildActionByTitle(ACTION_LABELS);
+
+// Performance observability. The minute bucket that holds the longest tick is
+// anchored to the page init time; GC attempts are paced (never inside the first
+// 30 s, at most one per 60 s afterwards). The numbers themselves live on plain
+// instance properties, never in `data`.
+const PERF_BUCKET_MS = 60000;
+const GC_FIRST_DELAY_MS = 30000;
+const GC_MIN_INTERVAL_MS = 60000;
+
+export default {
+  // Official rule (https://iot.mi.com/vela/quickapp/zh/guide/framework/script/page-data.html):
+  // `data` is an Object component-level data model and is NOT a function. A
+  // function-shaped data never initialises the page data object, which is why
+  // the shipped 0.1.4-refresh bundle rendered init=NaN and ready/show/tick=
+  // undefined. The keys below are the same initial values as before; the host
+  // turns them into accessors over $data.
+  data: {
+    iconSrc: "",
+    iconVisible: false,
+    debugVisible: false,
+    title: "连接中",
+    distanceText: "",
+    hasDistance: false,
+    distanceShortVisible: false,
+    distanceLongVisible: false,
+    roadName: "",
+    roadVisible: false,
+    exitLabel: "",
+    exitVisible: false,
+    diagReady: "未探测",
+    diagStatus: "未探测",
+    inboundSummary: "0帧",
+    linkEvent: "无",
+    lifeInit: 0,
+    lifeReady: 0,
+    lifeShow: 0,
+    lifeTick: 0,
+    lifeText: "init=0 ready=0 show=0 tick=0",
+    // Diagnostic-only performance line. It stays empty until the diagnostics
+    // are expanded, so the collapsed page neither renders nor writes it more
+    // than once.
+    perfText: ""
+    // tickTimer is deliberately NOT a data field: it is a plain instance
+    // property, so it is never rendered and never reactive.
+  },
+
+  // Official host binding (https://iot.mi.com/vela/quickapp/zh/guide/framework/script/global-data-method.html):
+  // a page reads the app export with `this.$app.$def`, so both bundles share one
+  // state. No $app, no initialised session or a broken shape means 异常初始化.
+  toggleDebug() { this.debugVisible = !this.debugVisible; },
+
+  sharedSession() {
+    const def = this.$app && this.$app.$def;
+    if (!def || def.navInit !== "ok" || !def.navSession) {
+      return null;
+    }
+    if (typeof def.navSession.current !== "function" || typeof def.navSession.tick !== "function") {
+      return null;
+    }
+    return def.navSession;
+  },
+  // The app never initialised: show that explicitly instead of looking like a
+  // fresh page waiting for a connection.
+  applyAbnormal() {
+    setIfChanged(this, "iconSrc", "");
+    setIfChanged(this, "title", "异常初始化");
+    setIfChanged(this, "diagReady", "异常初始化");
+    setIfChanged(this, "diagStatus", "异常初始化");
+    setIfChanged(this, "inboundSummary", "异常初始化");
+    setIfChanged(this, "linkEvent", "异常初始化");
+    setIfChanged(this, "hasDistance", false);
+    setIfChanged(this, "distanceText", "");
+    setIfChanged(this, "roadName", "");
+    setIfChanged(this, "exitLabel", "");
+    // The new visibility booleans are cleared too: nothing may stay visible
+    // after the abnormal path, exactly like the original fields above. The
+    // diagnostic fields and their wording are left untouched. The whole path
+    // is deduplicated, so a second abnormal tick writes nothing at all.
+    setIfChanged(this, "iconVisible", false);
+    setIfChanged(this, "distanceShortVisible", false);
+    setIfChanged(this, "distanceLongVisible", false);
+    setIfChanged(this, "roadVisible", false);
+    setIfChanged(this, "exitVisible", false);
+  },
+
+  // -----------------------------------------------------------------------
+  // Performance / GC observability.
+  //
+  // Official advice (https://iot.mi.com/vela/quickapp/zh/guide/best-practice/memory.html):
+  // call global.runGC() to release memory, but "不要频繁调用，防止页面卡顿".
+  // These counters are plain instance properties on purpose: they are not
+  // rendered, so they must not live in `data` ("和 UI 无关，不需要绑定的数据，
+  // 不要声明到 viewModel 的数据里") and must not trigger a repaint. They are
+  // initialised once, so onShow can never reset them.
+  // -----------------------------------------------------------------------
+  ensurePerfState() {
+    if (this.perfReady === true) {
+      return;
+    }
+    this.perfReady = true;
+    this.perfInitAtMs = Date.now();
+    this.perfBucket = 0;
+    this.perfMaxTickMs = 0;
+    this.gcCallCount = 0;
+    this.gcLastMs = 0;
+    this.gcLastAttemptMs = 0;
+  },
+
+  // At most one attempt per 60 s, and never inside the first 30 s after init.
+  gcDue(nowMs) {
+    if (this.gcLastAttemptMs === 0) {
+      return nowMs - this.perfInitAtMs >= GC_FIRST_DELAY_MS;
+    }
+    return nowMs - this.gcLastAttemptMs >= GC_MIN_INTERVAL_MS;
+  },
+
+  // Best effort only: a missing global, a missing runGC or a throwing runGC
+  // must never disturb the display, the lifecycle or the timers.
+  callGC() {
+    const host = typeof global !== "undefined" ? global : null;
+    if (host === null || typeof host.runGC !== "function") {
+      return;
+    }
+    this.gcCallCount = this.gcCallCount + 1;
+    const startedMs = Date.now();
+    try {
+      host.runGC();
+    } catch (err) {
+      // Best effort: the page keeps painting with the memory it has.
+    }
+    const costMs = Date.now() - startedMs;
+    this.gcLastMs = costMs >= 0 ? costMs : 0;
+  },
+
+  maybeRunGC(nowMs) {
+    this.ensurePerfState();
+    if (!this.gcDue(nowMs)) {
+      return;
+    }
+    // The window advances on every due attempt, so an unavailable or throwing
+    // runGC is retried no faster than once per minute either.
+    this.gcLastAttemptMs = nowMs;
+    this.callGC();
+  },
+
+  // The only place that writes perfText, and only while the diagnostics are
+  // expanded. The inbound count comes from the session's bounded ring; a
+  // missing session reports 0 instead of touching null.
+  updatePerfText(shared, nowMs) {
+    let inboundCount = 0;
+    if (shared !== null && typeof shared.inboundStats === "function") {
+      const stats = shared.inboundStats(nowMs);
+      if (stats !== null && stats !== undefined && typeof stats.count === "number") {
+        inboundCount = stats.count;
+      }
+    }
+    setIfChanged(
+      this,
+      "perfText",
+      "最长" + this.perfMaxTickMs + "ms 入帧" + inboundCount +
+        "帧 GC" + this.gcCallCount + "次 " + this.gcLastMs + "ms"
+    );
+  },
+
+  // The tick cost is measured with Date.now() around the whole tick, the GC
+  // included, so the reported maximum is the real worst case. The minute
+  // bucket is anchored to the init time and restarts every 60 s.
+  finishTickPerf(startMs, shared) {
+    this.ensurePerfState();
+    const nowMs = Date.now();
+    const costMs = nowMs - startMs;
+    const bucket = Math.floor((nowMs - this.perfInitAtMs) / PERF_BUCKET_MS);
+    if (bucket !== this.perfBucket) {
+      this.perfBucket = bucket;
+      this.perfMaxTickMs = 0;
+    }
+    if (costMs > this.perfMaxTickMs) {
+      this.perfMaxTickMs = costMs;
+    }
+    if (this.debugVisible === true) {
+      this.updatePerfText(shared, nowMs);
+    }
+  },
+
+
+  // Lifecycle counters, purely local: they make the page's own lifecycle
+  // observable on the band and in the tests. They never read or write the
+  // shared session, so they cannot disturb navigation state.
+  bumpLife(which) {
+    if (which === "init") {
+      this.lifeInit = this.lifeInit + 1;
+    } else if (which === "ready") {
+      this.lifeReady = this.lifeReady + 1;
+    } else if (which === "show") {
+      this.lifeShow = this.lifeShow + 1;
+    } else if (which === "tick") {
+      this.lifeTick = this.lifeTick + 1;
+    }
+    this.lifeText =
+      "init=" + this.lifeInit +
+      " ready=" + this.lifeReady +
+      " show=" + this.lifeShow +
+      " tick=" + this.lifeTick;
+  },
+
+  // The one 1000 ms refresh timer is armed by onInit, not by onShow: the page
+  // must keep repainting even when the host only ran onInit. A second arming
+  // is impossible because an already armed timer wins.
+  armTickTimer() {
+    if (this.tickTimer != null) {
+      return;
+    }
+    this.tickTimer = setInterval(() => {
+      this.bumpLife("tick");
+      this.tick();
+    }, TICK_INTERVAL_MS);
+  },
+
+  clearTickTimer() {
+    if (this.tickTimer != null) {
+      clearInterval(this.tickTimer);
+      this.tickTimer = null;
+    }
+  },
+
+  onInit() {
+    this.clearTickTimer();
+    // The 30 s GC guard and the minute bucket are anchored here, once.
+    this.ensurePerfState();
+    this.bumpLife("init");
+    // The synchronous tick only paints; it is not the interval callback and
+    // therefore does not count as a tick.
+    this.tick();
+    this.armTickTimer();
+  },
+
+  onReady() {
+    this.bumpLife("ready");
+    this.armTickTimer();
+  },
+
+  onShow() {
+    this.bumpLife("show");
+    this.tick();
+    this.armTickTimer();
+  },
+
+  onHide() {
+    this.clearTickTimer();
+    // One extra best-effort release when the page leaves the screen, on top of
+    // the 60 s tick limiter, and it re-arms that limiter.
+    this.ensurePerfState();
+    this.gcLastAttemptMs = Date.now();
+    this.callGC();
+  },
+
+  onDestroy() {
+    // Do not touch the session here: leaving the page must not erase the
+    // latest state. Only the local timer goes away.
+    this.clearTickTimer();
+  },
+
+  tick() {
+    const startMs = Date.now();
+    const shared = this.sharedSession();
+    if (shared === null) {
+      this.applyAbnormal();
+    } else {
+      this.applyDisplay(shared.tick(startMs));
+    }
+    // Both paths are timed, and the optional GC is inside the measured span.
+    this.maybeRunGC(startMs);
+    this.finishTickPerf(startMs, shared);
+  },
+
+  // Every projection below goes through the module-level setIfChanged: the
+  // field name, the initial value and the projection semantics are unchanged,
+  // only a write whose value is already there is skipped.
+  applyDisplay(display) {
+    const d = display || {};
+    setIfChanged(this, "title", d.title);
+    const action = ACTION_BY_TITLE[d.title];
+    setIfChanged(this, "iconSrc", action === undefined ? "" : "/common/images/" + action + ".png");
+    // Every template `if` reads one single boolean field, so the presence of
+    // the string fields above is projected onto these booleans here instead of
+    // being tested inline in the template.
+    setIfChanged(this, "iconVisible", action !== undefined);
+    const roadName = d.roadName || "";
+    setIfChanged(this, "roadName", roadName);
+    setIfChanged(this, "roadVisible", roadName !== "");
+    const exitLabel = d.exitLabel || "";
+    setIfChanged(this, "exitLabel", exitLabel);
+    setIfChanged(this, "exitVisible", exitLabel !== "");
+    // The four diagnostic lines are read straight from the session object and
+    // only default when the field is absent. They never influence title/road.
+    setIfChanged(this, "diagReady", d.diagReady || "未探测");
+    setIfChanged(this, "diagStatus", d.diagStatus || "未探测");
+    setIfChanged(this, "inboundSummary", d.inboundSummary || "0帧");
+    setIfChanged(this, "linkEvent", d.linkEvent || "无");
+    if (typeof d.distanceM === "number") {
+      setIfChanged(this, "hasDistance", true);
+      // The distance is never truncated or re-scaled: the exact same text as
+      // before is kept, only the size tier is derived from its digit count.
+      setIfChanged(this, "distanceText", d.distanceM + "米");
+      const digitCount = (this.distanceText.match(/[0-9]/g) || []).length;
+      // Three digits or fewer use the larger static class; four and above keep
+      // the 52 px base class. The two booleans are mutually exclusive and the
+      // fallback stays on the base class, so nothing can render twice.
+      const shortVisible = digitCount > 0 && digitCount <= 3;
+      setIfChanged(this, "distanceShortVisible", shortVisible);
+      setIfChanged(this, "distanceLongVisible", !shortVisible);
+    } else {
+      setIfChanged(this, "hasDistance", false);
+      setIfChanged(this, "distanceText", "");
+      setIfChanged(this, "distanceShortVisible", false);
+      setIfChanged(this, "distanceLongVisible", false);
+    }
+  }
+};
+</script>
+
+<style>
+.page {
+  flex-direction: column;
+  justify-content: center;
+  align-items: center;
+  background-color: #000000;
+  width: 100%;
+  height: 100%;
+}
+.nav-icon {
+  width: 140px;
+  height: 140px;
+}
+.title {
+  font-size: 42px;
+  font-weight: bold;
+  color: #00ff99;
+  text-align: center;
+  width: 100%;
+}
+.diag {
+  flex-direction: column;
+  align-items: center;
+  margin-top: 6px;
+}
+.diag-line {
+  font-size: 15px;
+  color: #617168;
+  text-align: center;
+  width: 100%;
+}
+.distance {
+  font-size: 52px;
+  font-weight: bold;
+  color: #ffffff;
+  text-align: center;
+  width: 100%;
+}
+.distance-short {
+  font-size: 64px;
+}
+.road {
+  font-size: 34px;
+  font-weight: bold;
+  color: #00dfff;
+  text-align: center;
+  width: 100%;
+}
+.exit {
+  font-size: 26px;
+  font-weight: bold;
+  color: #ffdd00;
+  text-align: center;
+  width: 100%;
+}
+</style>

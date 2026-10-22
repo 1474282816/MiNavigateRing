@@ -1,0 +1,61 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <uses-permission android:name="android.permission.INTERNET" />
+    <uses-permission android:name="android.permission.WAKE_LOCK" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_CONNECTED_DEVICE" />
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    <!-- The bridge is restored after a reboot or an in-place update, and the user is offered
+         the battery-optimization exemption so the foreground session keeps running. -->
+    <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
+    <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />
+    <!-- The SDK channel goes through the official companion app's background service;
+         the probe also monitors it, so the network state permission is declared here. -->
+    <uses-permission android:name="android.permission.CHANGE_NETWORK_STATE" />
+
+    <!-- The interconnect SDK binds to the official companion apps by package name. -->
+    <queries>
+        <package android:name="com.mi.health" />
+        <package android:name="com.xiaomi.wearable" />
+    </queries>
+
+    <application
+        android:allowBackup="false"
+        android:label="导航环"
+        android:supportsRtl="true"
+        android:theme="@style/Theme.Probe">
+
+        <activity
+            android:name=".MainActivity"
+            android:exported="true"
+            android:label="导航环">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+
+        <service
+            android:name=".transport.ProbeForegroundService"
+            android:exported="false"
+            android:foregroundServiceType="connectedDevice" />
+        <service android:name=".navigation.AmapNotificationService"
+            android:label="MiNavigateRing 高德导航" android:exported="true"
+            android:permission="android.permission.BIND_NOTIFICATION_LISTENER_SERVICE">
+            <intent-filter><action android:name="android.service.notification.NotificationListenerService" /></intent-filter>
+        </service>
+
+        <!-- Restores the bridge only while the user left it on; the two actions are the
+             whole filter on purpose, so no other broadcast can start a session. -->
+        <receiver
+            android:name=".navigation.BridgeRestoreReceiver"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="android.intent.action.BOOT_COMPLETED" />
+                <action android:name="android.intent.action.MY_PACKAGE_REPLACED" />
+            </intent-filter>
+        </receiver>
+    </application>
+
+</manifest>

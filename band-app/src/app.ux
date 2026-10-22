@@ -1,0 +1,196 @@
+<script>
+import session from "./common/session.js";
+
+// Official interconnect values, mirrored from
+// https://iot.mi.com/vela/quickapp/en/features/network/interconnect.html
+// connect.getReadyState: 1 connected, 2 disconnected.
+// connect.diagnosis: 0 peer OK, 204 timeout, 1001 peer app not installed,
+// 1000 other. onmessage carries data.data typed as String by the host, but the
+// existing tests also feed objects, so both shapes must reach session.onMessage.
+const SUMMARY_LIMIT = 48;
+
+// One-frame summary for the diagnosis view. Only the type and, when readable,
+// the id are recorded: never the whole frame, so no route text leaks. The
+// decoded value from the single parse in onmessage is reused here, so the id
+// costs no second parse; a frame that cannot be summarised at all reports
+// "解析失败" instead of throwing, so onmessage keeps consuming it.
+function summarizeInbound(raw, decoded) {
+  try {
+    let type = "other";
+    if (typeof raw === "string") {
+      type = "string";
+    } else if (raw !== null && typeof raw === "object") {
+      type = "object";
+    }
+
+    // The prefix always describes the frame as it arrived: a JSON string frame
+    // stays "string id=<id>", an object frame stays "object id=<id>". Only the
+    // already decoded value is read for the id, and a frame whose parse failed
+    // carries none, which keeps the baseline plain "string" summary.
+    let id = null;
+    if (decoded !== null && decoded !== undefined && typeof decoded === "object" && decoded.id !== undefined) {
+      id = decoded.id;
+    }
+
+    let summary = type + (id === null ? "" : " id=" + id);
+    if (summary.length > SUMMARY_LIMIT) {
+      summary = summary.slice(0, SUMMARY_LIMIT);
+    }
+    return summary;
+  } catch (err) {
+    return "解析失败";
+  }
+}
+
+function readyText(status) {
+  if (status === 1) {
+    return "1已连接";
+  }
+  if (status === 2) {
+    return "2已断开";
+  }
+  return "ready:" + status;
+}
+
+function diagnosisText(status) {
+  if (status === 0) {
+    return "0对端已连接";
+  }
+  if (status === 204) {
+    return "204超时";
+  }
+  if (status === 1001) {
+    return "1001对端未安装";
+  }
+  if (status === 1000) {
+    return "1000其他";
+  }
+  return "diag:" + status;
+}
+
+export default {
+  // Official app-level shared state (https://iot.mi.com/vela/quickapp/zh/guide/framework/script/global-data-method.html):
+  // app.ux reaches this object with `this`, every page reaches the very same one
+  // with `this.$app.$def`, so both bundles share one session instance.
+  navSession: null,
+  navInit: "未初始化",
+
+  onCreate() {
+    try {
+      const interconnect = require("@system.interconnect");
+      const vibrator = require("@system.vibrator");
+      const connect = interconnect.instance();
+      // Register the four callbacks first: a diagnosis call that throws must
+      // not leave onmessage unregistered.
+      connect.onmessage = (event) => {
+        try {
+          const data = event && event.data !== undefined ? event.data : event;
+          // The frame is decoded exactly once here. The decoded value feeds both
+          // the diagnosis summary and the session, and the session hands the
+          // object on to the reducer, so no stage parses the same frame again.
+          // A JSON string that does not parse keeps the baseline result item by
+          // item: the summary stays the string type ("string", never 解析失败),
+          // the session receives an empty object, the display falls back to
+          // 暂无导航 and no ack is sent.
+          let decoded = data;
+          if (typeof data === "string") {
+            try {
+              decoded = JSON.parse(data);
+            } catch (parseErr) {
+              decoded = {};
+            }
+          }
+          session.noteInbound(summarizeInbound(data, decoded));
+          const result = session.onMessage(decoded, Date.now());
+          // The ack and the frame summary must survive a vibrator failure, so
+          // the vibration has its own guard and never shares the frame's try.
+          if (result.vibrate) {
+            try {
+              vibrator.vibrate({ mode: "short" });
+            } catch (vibrateErr) {
+              // Vibration is best-effort: never let it drop the ack below.
+            }
+          }
+          if (result.ack !== null) {
+            connect.send({ data: result.ack, success() {}, fail() {} });
+          }
+        } catch (err) {
+          session.noteInbound("解析失败");
+        }
+      };
+      connect.onopen = () => {
+        session.onLinkOpen(Date.now());
+        session.noteLink("open");
+      };
+      connect.onclose = () => {
+        session.onLinkClosed(Date.now());
+        session.noteLink("close");
+      };
+      connect.onerror = () => {
+        session.onLinkClosed(Date.now());
+        session.noteLink("error");
+      };
+
+      // Diagnostics come after the callback registration so their failure stays
+      // local. The official fields are named `status`; the text is written on
+      // the same field so a single line shows the whole ready/diagnosis value.
+      let diagnosisAttempted = false;
+      let diagnosisUnavailable = false;
+
+      if (typeof connect.getReadyState === "function") {
+        diagnosisAttempted = true;
+        try {
+          connect.getReadyState({
+            success(res) {
+              const s = res && res.status !== undefined ? res.status : res;
+              session.noteDiagReady(readyText(s));
+            },
+            fail() {
+              session.noteDiagReady("ready调用失败");
+            }
+          });
+        } catch (err) {
+          diagnosisUnavailable = true;
+        }
+      } else {
+        diagnosisUnavailable = true;
+      }
+
+      if (typeof connect.diagnosis === "function") {
+        diagnosisAttempted = true;
+        try {
+          connect.diagnosis({
+            timeout: 8000,
+            success(res) {
+              const s = res && res.status !== undefined ? res.status : res;
+              session.noteDiagnosis(diagnosisText(s));
+            },
+            fail() {
+              session.noteDiagnosis("diag调用失败");
+            }
+          });
+        } catch (err) {
+          diagnosisUnavailable = true;
+        }
+      } else {
+        diagnosisUnavailable = true;
+      }
+
+      if (diagnosisUnavailable || !diagnosisAttempted) {
+        // At least one official method is missing or threw: say so instead of
+        // claiming a state, and never let onCreate throw.
+        session.noteDiagReady("诊断不可用");
+      }
+
+      // The listeners are registered: publish the one session instance on the app
+      // export so the page reads it instead of its own bundler copy.
+      this.navSession = session;
+      this.navInit = "ok";
+    } catch (err) {
+      // 宿主或模块不可用时不得抛出：不退回默认值，显式暴露初始化异常。
+      this.navSession = null;
+      this.navInit = "异常初始化";
+    }
+  }
+};
+</script>

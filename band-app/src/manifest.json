@@ -1,0 +1,30 @@
+{
+  "package": "com.minavigatering.probe",
+  "name": "导航环",
+  "versionName": "0.2.0-navigation",
+  "versionCode": 11,
+  "icon": "/logo.png",
+  "minPlatformVersion": 1070,
+  "deviceTypeList": [
+    "watch"
+  ],
+  "features": [
+    {
+      "name": "system.interconnect"
+    },
+    {
+      "name": "system.vibrator"
+    }
+  ],
+  "config": {
+    "designWidth": 192
+  },
+  "router": {
+    "entry": "pages/index",
+    "pages": {
+      "pages/index": {
+        "component": "index"
+      }
+    }
+  }
+}

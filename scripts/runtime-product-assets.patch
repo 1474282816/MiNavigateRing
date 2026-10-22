@@ -1,0 +1,122 @@
+--- a/quickapp_vm.js
++++ b/quickapp_vm.js
+@@ -43,6 +43,7 @@
+         this.vibrateLog = [];
+         this.interconnectInstances = [];
+         this.renderTree = null;
++        this.assetReader = options.assetReader || (() => null);
+         this.heartRate = 72;
+         this.steps = 8420;
+         this.pageVisible = false;
+@@ -464,8 +465,16 @@
+         if (typeof page.template === 'function') {
+             const vnode = page.template(page);
+             const layout = layoutFromVNodes(vnode, page.style, this.width, this.height);
++            for (const element of layout.elements) {
++                if (element.type === 'image') {
++                    const asset = this.assetReader(element.src.replace(/^\//, ''));
++                    if (!asset || asset.subarray(0, 8).toString('hex') !== '89504e470d0a1a0a')
++                        throw new Error('Missing PNG asset: ' + element.src);
++                    element.png = asset.toString('base64');
++                }
++            }
+             this.renderTree = {
+-                viewport: { width: this.width, height: this.height, bg: '#f4f6f5' },
++                viewport: { width: this.width, height: this.height, bg: layout.background || '#f4f6f5' },
+                 source: 'template',
+                 elements: layout.elements,
+                 unsupported: layout.unsupported
+@@ -568,7 +577,7 @@
+         }
+         if (vnode.kind !== 'element') return;
+         const tag = vnode.tag;
+-        if (tag !== 'div' && tag !== 'text') {
++        if (tag !== 'div' && tag !== 'text' && tag !== 'image') {
+             unsupported.push({ tag, supported: false });
+             return;
+         }
+@@ -583,6 +592,15 @@
+             return;
+         }
+ 
++        if (tag === 'image') {
++            const src = resolveValue({ value: opts.src });
++            const imageWidth = parsePx(style.width, 112);
++            const imageHeight = parsePx(style.height, 112);
++            elements.push({ type: 'image', src, classList, style,
++                rect: [(width - imageWidth) / 2, cursor.y, imageWidth, imageHeight] });
++            cursor.y += imageHeight + 2;
++            return;
++        }
+         const fontSize = parsePx(style.fontSize, 16);
+         const color = typeof style.color === 'string' ? style.color : '#17261e';
+         cursor.y += parsePx(style.marginTop, 0);
+@@ -606,7 +624,7 @@
+     const list = Array.isArray(vnodes) ? vnodes : [vnodes];
+     const cursor = { y: 12 };
+     for (const vnode of list) walk(vnode, cursor);
+-    return { elements, unsupported };
++    return { elements, unsupported, background: declarations.page && declarations.page.backgroundColor };
+ }
+ 
+ // style entries are [selectors, declarations]; a selector like [0, "page"]
+--- a/rpk_renderer.js
++++ b/rpk_renderer.js
+@@ -204,7 +204,7 @@
+ // stdin, the PNG comes back over stdout; both are read/written as raw Buffers so
+ // the PNG bytes are never mangled by an encoding conversion.
+ const PILLOW_RENDERER_SOURCE = `
+-import sys, json, io
++import sys, json, io, base64
+ from PIL import Image, ImageDraw, ImageFont
+ try:
+     payload = json.loads(sys.stdin.buffer.read().decode('utf-8'))
+@@ -215,6 +215,11 @@
+     draw = ImageDraw.Draw(img)
+     font_path = payload.get('font')
+     for op in payload.get('ops') or []:
++        if op.get('op') == 'image':
++            asset = Image.open(io.BytesIO(base64.b64decode(op['png']))).convert('RGBA')
++            asset = asset.resize((int(op['w']), int(op['h'])), Image.Resampling.LANCZOS)
++            img.paste(asset, (int(op['x']), int(op['y'])), asset)
++            continue
+         if op.get('op') != 'text':
+             continue
+         size = int(op.get('size') or 16)
+@@ -239,7 +244,7 @@
+         y = int(op.get('y') or 0)
+         line_step = size + 2
+         for line in lines:
+-            draw.text((int(op.get('x') or 0), y), line, font=font, fill=color)
++            draw.text((int(op.get('x') or 0), y), line, font=font, fill=color, stroke_width=1 if op.get('bold') else 0)
+             y += line_step
+     out = io.BytesIO()
+     img.save(out, format='PNG')
+@@ -256,10 +261,15 @@
+     const h = viewport.height || HEIGHT;
+     const ops = [];
+     for (const elem of renderTree.elements) {
++        if (elem && elem.type === 'image') {
++            ops.push({ op: 'image', png: elem.png, x: elem.rect[0], y: elem.rect[1], w: elem.rect[2], h: elem.rect[3] });
++            continue;
++        }
+         if (!elem || elem.type !== 'text') continue;
+         const rect = elem.rect || [8, 0, w - 16, 16];
+         ops.push({
+             op: 'text',
++            bold: elem.style && elem.style.fontWeight === 'bold',
+             text: elem.text === undefined || elem.text === null ? '' : String(elem.text),
+             x: rect[0],
+             y: rect[1],
+--- a/server.js
++++ b/server.js
+@@ -42,7 +42,8 @@
+         const devCfg = manifest.device || manifest.config || {};
+         runtime = new QuickAppRuntime({
+             width: devCfg.width || devCfg.designWidth || 192,
+-            height: devCfg.height || 490
++            height: devCfg.height || 490,
++            assetReader: (name) => currentRpkPackage.getFile(name)
+         });
+ 
+         runtime.on('render', (tree) => {
