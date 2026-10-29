@@ -22,8 +22,6 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.ui.draw.clip
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
-import androidx.compose.material3.Card
-import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -32,7 +30,6 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.unit.dp
 import com.minavigatering.probe.navigation.NavigationPhase
 import com.minavigatering.probe.navigation.NavigationUiModel
 import com.minavigatering.probe.protocol.NavProtocol
@@ -252,21 +249,10 @@ private fun FooterLink(onDiagnostics: () -> Unit) {
         }
     }
 }
+/** 主页白卡；实现与诊断页分区卡共用 [SurfaceCard]，两页的边距与描边因此不会漂移。 */
 @Composable
 private fun WhiteCard(content: @Composable ColumnScope.() -> Unit) {
-    Card(
-        modifier = Modifier.fillMaxWidth(),
-        shape = RoundedCornerShape(NavigationTheme.Dimens.cardCorner),
-        colors = CardDefaults.cardColors(containerColor = NavigationTheme.Colors.cardBackground),
-        elevation = CardDefaults.cardElevation(defaultElevation = 0.dp),
-        border = BorderStroke(NavigationTheme.Dimens.cardBorderWidth, NavigationTheme.Colors.cardBorder),
-    ) {
-        Column(
-            modifier = Modifier.fillMaxWidth().padding(NavigationTheme.Dimens.heroPadding),
-            verticalArrangement = Arrangement.spacedBy(NavigationTheme.Dimens.heroGap),
-            content = content,
-        )
-    }
+    SurfaceCard(content = content)
 }
 /** 仅由既有令牌派生：dotSize 8dp、smallGap 4dp。 */
 private val dotSize = NavigationTheme.Dimens.ringStrokeWidth * 4

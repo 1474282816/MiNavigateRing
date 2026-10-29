@@ -12,17 +12,12 @@ import android.os.SystemClock
 import android.provider.Settings
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
-import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.safeDrawingPadding
-import androidx.compose.material3.Button
-import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
-import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import com.minavigatering.probe.navigation.AmapNotificationService
 import com.minavigatering.probe.navigation.NavigationSettings
@@ -104,13 +99,10 @@ private fun contentActions(
     settings = navigationSettingActions(context),
 )
 
-/** The diagnostics page and its "返回导航" branch, unchanged from the previous main page. */
+/** The diagnostics page; its own header carries the back link, so no outer chrome here. */
 @Composable
 private fun DebugPage(transport: XiaomiWearableTransport, onBack: () -> Unit) {
-    Column(Modifier.safeDrawingPadding()) {
-        Button(onClick = onBack) { Text("返回导航") }
-        ProbeScreen(transport)
-    }
+    ProbeScreen(transport, onBack)
 }
 
 /**
