@@ -35,6 +35,49 @@ const REMINDER_HISTORY_LIMIT = 32;
 // band shows the connecting state again and hides the stale turn.
 const STALE_AFTER_MS = 15000;
 
+// On-demand vibration patterns for the phone-side diagnosis screen. `vibrate()`
+// only offers short/long on this hardware and `vibrator.start()` is documented
+// as unsupported on REDMI Watch 6, so repeated patterns are stitched together
+// from single calls. Anything outside this set is ignored, never guessed.
+const VIBE_PATTERNS = new Set(["short", "long", "short3", "long2", "long3"]);
+
+// Turn-reminder strength, chosen on the phone: 0 标准 / 1 强 / 2 最强.
+//
+// The motor amplitude belongs to the watch's own 设置 → 声音与振动 → 振动强度 switch and
+// `start()`/`stop()`/`getSystemDefaultMode()` are all documented as unsupported on REDMI
+// Watch 6, so nothing here can make one pulse harder. What it can do is keep the motor
+// driven: 强 repeats the long pulse twice, 最强 three times. 800 ms between pulses is
+// wider than the long pulse itself, so each beat lands as its own jolt instead of being
+// swallowed by a still-running vibration task.
+const REMINDER_GAP_MS = 800;
+const REMINDER_DEFAULT_LEVEL = 1;
+
+function normalizeVibeLevel(value) {
+  const level = toNumber(value);
+  if (level === 0 || level === 1 || level === 2) {
+    return level;
+  }
+  // Unknown (or absent) means "the band keeps what it already plays"; the caller then
+  // falls back to REMINDER_DEFAULT_LEVEL rather than guessing a strength level.
+  return null;
+}
+
+// Steps are {mode, atMs}: atMs is the offset from the reminder start, so the caller can
+// schedule the whole burst up front while the first beat still fires immediately.
+function reminderPatternOf(level) {
+  const normalized = normalizeVibeLevel(level);
+  const effective = normalized === null ? REMINDER_DEFAULT_LEVEL : normalized;
+  if (effective === 0) {
+    return [{ mode: "short", atMs: 0 }];
+  }
+  const count = effective === 2 ? 3 : 2;
+  const steps = [];
+  for (let i = 0; i < count; i += 1) {
+    steps.push({ mode: "long", atMs: i * REMINDER_GAP_MS });
+  }
+  return steps;
+}
+
 function toNumber(value) {
   if (typeof value === "number" && Number.isFinite(value)) {
     return value;
@@ -82,8 +125,23 @@ function decodeMessage(message) {
     navStatus: raw.navStatus,
     link: raw.link,
     heartbeat: raw.heartbeat === true,
-    sentAtMs: toNumber(raw.sentAtMs)
+    sentAtMs: toNumber(raw.sentAtMs),
+    // Diagnosis-only channel: a vibration request, never part of the display state.
+    vibe: toStringOrNull(raw.vibe),
+    // Reminder strength for the *turn* vibration; null means "no change requested".
+    vibeLevel: normalizeVibeLevel(raw.vibeLevel)
   };
+}
+
+// Returns the vibration pattern a frame asks for, or null for a normal frame.
+// Kept separate from reduceDisplay so a vibration test can never change the
+// title, distance, road or action the band is showing.
+function vibePatternOf(message) {
+  const m = decodeMessage(message);
+  if (m.vibe !== null && VIBE_PATTERNS.has(m.vibe)) {
+    return m.vibe;
+  }
+  return null;
 }
 
 function emptyDisplay() {
@@ -93,7 +151,7 @@ function emptyDisplay() {
     roadName: "",
     exitLabel: "",
     actionId: null,
-    mode: "walk",
+    mode: "cycle",
     remindedTurn: [],
     remindedAdvisory: [],
     receivedAtMs: 0,
@@ -115,7 +173,8 @@ function carryPrev(prev) {
     roadName: p.roadName !== undefined ? p.roadName : "",
     exitLabel: p.exitLabel !== undefined ? p.exitLabel : "",
     actionId: p.actionId !== undefined ? p.actionId : null,
-    mode: typeof p.mode === "string" ? p.mode : "walk",
+    // Default matches the phone-side default (cycling); a carried mode always wins.
+    mode: typeof p.mode === "string" ? p.mode : "cycle",
     remindedTurn: Array.isArray(p.remindedTurn) ? p.remindedTurn : [],
     remindedAdvisory: Array.isArray(p.remindedAdvisory) ? p.remindedAdvisory : [],
     receivedAtMs: p.receivedAtMs !== undefined ? p.receivedAtMs : 0
@@ -289,9 +348,15 @@ module.exports = {
   ACTION_LABELS,
   VALID_ACTIONS,
   NO_NAVIGATION_TITLE,
+  VIBE_PATTERNS,
+  REMINDER_DEFAULT_LEVEL,
+  REMINDER_GAP_MS,
+  normalizeVibeLevel,
+  reminderPatternOf,
   decodeMessage,
   reduceDisplay,
   tick,
   isValidState,
+  vibePatternOf,
   emptyDisplay
 };

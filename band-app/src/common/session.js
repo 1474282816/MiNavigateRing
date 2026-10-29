@@ -11,6 +11,11 @@ const codec = require("./codec.js");
 
 let latest = codec.emptyDisplay();
 
+// Reminder strength last requested by the phone (0 标准 / 1 强 / 2 最强), or null when the
+// phone never said. Held here rather than in the display so it survives page re-entry and
+// so a frame without the field can never reset it.
+let reminderLevel = null;
+
 // Diagnostic observability, deliberately separate from the reduced display.
 // These four fields describe the transport itself (ready state, official
 // diagnosis status, inbound frame summaries and link events). They must never
@@ -134,9 +139,22 @@ function onMessage(raw, nowMs) {
   // codec.decodeMessage's own fallback produces, so the visible outcome of a
   // malformed frame is unchanged (暂无导航, no ack).
   const decoded = codec.decodeMessage(raw);
+  // A frame carrying a legal level updates the reminder strength; null (absent or invalid)
+  // leaves the previous choice alone so an idle frame cannot downgrade the reminder.
+  if (decoded.vibeLevel !== null) {
+    reminderLevel = decoded.vibeLevel;
+  }
   recordInbound(now);
-  const display = codec.reduceDisplay(latest, decoded, now);
-  latest = withDiag(display);
+  // A vibration test frame carries no navigation meaning: the reducer is skipped so
+  // the band keeps showing whatever turn it had before the test button was pressed.
+  const vibe = codec.vibePatternOf(decoded);
+  let display;
+  if (vibe === null) {
+    display = codec.reduceDisplay(latest, decoded, now);
+    latest = withDiag(display);
+  } else {
+    display = latest;
+  }
 
   let ack = null;
   // Only real data frames are acknowledged: no ack for heartbeats and no ack
@@ -151,7 +169,7 @@ function onMessage(raw, nowMs) {
     };
   }
 
-  return { display, vibrate: display.vibrate === true, ack };
+  return { display, vibrate: vibe === null && display.vibrate === true, vibe, ack };
 }
 
 // Apply the local 15 s liveness timeout and persist the result. Like
@@ -205,11 +223,24 @@ function onLinkOpen(nowMs) {
   return latest;
 }
 
+// Reminder strength to use right now: the last legal level from the phone, or the default
+// when it never sent one. app.ux asks for this instead of holding its own copy, so the page
+// and the session can never disagree about how hard the next turn should buzz.
+function vibeLevel() {
+  return reminderLevel === null ? codec.REMINDER_DEFAULT_LEVEL : reminderLevel;
+}
+
+// The burst to play for the next turn reminder: [{mode, atMs}, ...].
+function reminderPattern() {
+  return codec.reminderPatternOf(vibeLevel());
+}
+
 // Test-only reset. The page must never call this on destroy: doing so would
 // wipe the state that onShow is supposed to read back. The diagnostic fields
 // go back to their initial values too.
 function resetForTest() {
   latest = Object.assign(codec.emptyDisplay(), diagInitial());
+  reminderLevel = null;
   resetInbound();
   return latest;
 }
@@ -218,6 +249,8 @@ module.exports = {
   onMessage,
   tick,
   current,
+  vibeLevel,
+  reminderPattern,
   onLinkClosed,
   onLinkOpen,
   noteDiagReady,

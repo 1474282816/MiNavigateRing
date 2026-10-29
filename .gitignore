@@ -14,3 +14,7 @@ app/signing/signing.local.properties
 .temp_band-app/
 # Xiaomi wearable SDK: third-party file, not redistributed here (see docs/sdk-provenance.md)
 app/libs/*.aar
+# Build outputs: reproduce with scripts/build-rpk.js / scripts/build-rw6.js, do not commit binaries
+/dist-final/
+/dist-rw6/
+band-app/dist/

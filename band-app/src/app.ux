@@ -80,6 +80,65 @@ export default {
       const interconnect = require("@system.interconnect");
       const vibrator = require("@system.vibrator");
       const connect = interconnect.instance();
+
+      // One vibration call, guarded: a rejected mode must never reach the caller.
+      const vibrateOnce = (mode) => {
+        try {
+          vibrator.vibrate({ mode: mode });
+        } catch (vibrateErr) {
+          // Best-effort, like the reminder vibration below.
+        }
+      };
+
+      // On-demand patterns for the phone-side diagnosis screen. REDMI Watch 6
+      // documents vibrate() but not start()/stop(), so "three short" and "two
+      // long" are stitched from single calls with setTimeout instead of using
+      // duration/interval/count. 260 ms sits just above the short pulse tail so
+      // the bursts stay distinguishable as separate beats.
+      const runVibePattern = (pattern) => {
+        if (pattern === "long") {
+          vibrateOnce("long");
+          return;
+        }
+        if (pattern === "long2") {
+          vibrateOnce("long");
+          setTimeout(() => { vibrateOnce("long"); }, 900);
+          return;
+        }
+        if (pattern === "long3") {
+          vibrateOnce("long");
+          setTimeout(() => { vibrateOnce("long"); }, 800);
+          setTimeout(() => { vibrateOnce("long"); }, 1600);
+          return;
+        }
+        if (pattern === "short3") {
+          vibrateOnce("short");
+          setTimeout(() => { vibrateOnce("short"); }, 260);
+          setTimeout(() => { vibrateOnce("short"); }, 520);
+          return;
+        }
+        vibrateOnce("short");
+      };
+
+      // Turn reminder. The strength comes from the phone (0 标准 / 1 强 / 2 最强): one short
+      // pulse, or two/three long pulses stitched 800 ms apart. Steps are scheduled up front
+      // and the first pulse fires synchronously, so a slow link can never swallow the alert.
+      // Every call goes through vibrateOnce, so one rejected pulse never kills the rest.
+      const playReminder = () => {
+        try {
+          const steps = session.reminderPattern();
+          for (let i = 0; i < steps.length; i += 1) {
+            const step = steps[i];
+            if (step.atMs === 0) {
+              vibrateOnce(step.mode);
+            } else {
+              setTimeout(() => { vibrateOnce(step.mode); }, step.atMs);
+            }
+          }
+        } catch (reminderErr) {
+          // Reminder vibration is best-effort: the ack below must still be sent.
+        }
+      };
       // Register the four callbacks first: a diagnosis call that throws must
       // not leave onmessage unregistered.
       connect.onmessage = (event) => {
@@ -104,12 +163,12 @@ export default {
           const result = session.onMessage(decoded, Date.now());
           // The ack and the frame summary must survive a vibrator failure, so
           // the vibration has its own guard and never shares the frame's try.
-          if (result.vibrate) {
-            try {
-              vibrator.vibrate({ mode: "short" });
-            } catch (vibrateErr) {
-              // Vibration is best-effort: never let it drop the ack below.
-            }
+          // A `vibe` frame is a pure vibration request from the diagnosis screen:
+          // it plays the requested pattern and leaves the display untouched.
+          if (result.vibe) {
+            runVibePattern(result.vibe);
+          } else if (result.vibrate) {
+            playReminder();
           }
           if (result.ack !== null) {
             connect.send({ data: result.ack, success() {}, fail() {} });
