@@ -388,4 +388,7 @@ fun heartbeatOf(state: StateMessage, nowMs: Long): StateMessage = state.copy(
     sentAtMs = nowMs,
     heartbeat = true,
     link = NavProtocol.LINK_CONNECTED,
+    // A vibration request is one-shot: a heartbeat that copied it would make the band
+    // buzz every 5 s until the next real navigation frame.
+    vibe = null,
 )

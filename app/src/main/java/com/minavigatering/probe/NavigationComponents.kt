@@ -37,7 +37,7 @@ import com.minavigatering.probe.navigation.NavigationPhase
 import com.minavigatering.probe.navigation.NavigationUiModel
 import com.minavigatering.probe.protocol.NavProtocol
 
-/** 无状态七块容器，顺序固定：标题、hero 插槽、状态卡、条件清单、模式分段、阶段主按钮、页脚。 */
+/** 无状态八块容器，顺序固定：标题、hero 插槽、状态卡、条件清单、模式分段、提醒强度分段、阶段主按钮、页脚。 */
 data class NavigationContentState(val ui: NavigationUiModel, val status: NavigationStatus, val settings: NavigationChecklist)
 /** 状态点用的布尔值，永不回读文字。 */
 data class NavigationStatus(val enabled: Boolean, val running: Boolean, val nodePresent: Boolean)
@@ -45,7 +45,10 @@ data class NavigationStatus(val enabled: Boolean, val running: Boolean, val node
 data class NavigationChecklist(val access: Boolean, val batteryExempt: Boolean, val restoreFailed: Boolean)
 /** [NavigationContent] 的回调；Android 目标由后续工单接线。 */
 data class NavigationContentActions(
-    val onMode: (String) -> Unit, val onMain: () -> Unit, val onDiagnostics: () -> Unit, val settings: NavigationSettingActions,
+    val onMode: (String) -> Unit,
+    /** Reminder strength 0 标准 / 1 强 / 2 最强, already validated by the screen. */
+    val onVibeLevel: (Int) -> Unit,
+    val onMain: () -> Unit, val onDiagnostics: () -> Unit, val settings: NavigationSettingActions,
 )
 /** 清单行与权限阶段主按钮背后的设置目标。 */
 data class NavigationSettingActions(
@@ -71,6 +74,7 @@ fun NavigationContent(state: NavigationContentState, actions: NavigationContentA
         StatusCard(state.ui, state.status)
         if (checklistVisible(state.ui.phase)) SettingsCard(state.settings, actions.settings)
         ModeSegment(state.ui.modeLabel, actions.onMode)
+        ReminderSegment(state.ui.vibeLabel, actions.onVibeLevel)
         MainPhaseButton(state.ui, actions.settings, actions.onMain)
         FooterLink(actions.onDiagnostics)
     }
@@ -84,7 +88,7 @@ private fun TitleHeader(modeLabel: String) {
     Row(verticalAlignment = Alignment.CenterVertically) {
         Column(Modifier.weight(1f)) {
             Text("导航环", color = NavigationTheme.Colors.textPrimary, fontSize = NavigationTheme.TextSize.pageTitle, fontWeight = FontWeight.Medium)
-            Text("高德步行 · 骑行导航", color = NavigationTheme.Colors.textSecondary, fontSize = NavigationTheme.TextSize.body)
+            Text("高德骑行 · 步行导航", color = NavigationTheme.Colors.textSecondary, fontSize = NavigationTheme.TextSize.body)
         }
         ModeChip(modeLabel)
     }
@@ -161,10 +165,41 @@ private fun ModeSegment(modeLabel: String, onMode: (String) -> Unit) {
             .background(NavigationTheme.Colors.segmentTrack, RoundedCornerShape(50))
             .padding(NavigationTheme.Dimens.segmentTrackPadding),
     ) {
-        ModeOption("步行", modeLabel == "步行", Modifier.weight(1f)) { onMode(NavProtocol.MODE_WALK) }
+        // Cycling first: it is the default mode, so the left-hand segment is the one already on.
         ModeOption("骑行", modeLabel == "骑行", Modifier.weight(1f)) { onMode(NavProtocol.MODE_CYCLE) }
+        ModeOption("步行", modeLabel == "步行", Modifier.weight(1f)) { onMode(NavProtocol.MODE_WALK) }
     }
 }
+
+/**
+ * Reminder strength segment: 标准 / 强 / 最强.
+ *
+ * This is not amplitude — the watch's own 设置 → 声音与振动 → 振动强度 switch owns that,
+ * and third-party快应用 cannot read or write it on this model. What changes here is how many
+ * long pulses the band drives per turn, which is what the wrist actually feels.
+ */
+@Composable
+private fun ReminderSegment(vibeLabel: String, onLevel: (Int) -> Unit) {
+    Row(verticalAlignment = Alignment.CenterVertically) {
+        Text(
+            "提醒强度",
+            color = NavigationTheme.Colors.textSecondary,
+            fontSize = NavigationTheme.TextSize.caption,
+        )
+        Spacer(Modifier.size(smallGap))
+        Row(
+            modifier = Modifier
+                .weight(1f)
+                .background(NavigationTheme.Colors.segmentTrack, RoundedCornerShape(50))
+                .padding(NavigationTheme.Dimens.segmentTrackPadding),
+        ) {
+            ModeOption("标准", vibeLabel == "标准", Modifier.weight(1f)) { onLevel(NavProtocol.VIBE_LEVEL_STANDARD) }
+            ModeOption("强", vibeLabel == "强", Modifier.weight(1f)) { onLevel(NavProtocol.VIBE_LEVEL_STRONG) }
+            ModeOption("最强", vibeLabel == "最强", Modifier.weight(1f)) { onLevel(NavProtocol.VIBE_LEVEL_MAX) }
+        }
+    }
+}
+
 @Composable
 private fun ModeOption(label: String, selected: Boolean, modifier: Modifier, onSelect: () -> Unit) {
     val background = if (selected) NavigationTheme.Colors.primary else Color.Transparent

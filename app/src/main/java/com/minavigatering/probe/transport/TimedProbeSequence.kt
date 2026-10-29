@@ -24,7 +24,7 @@ class TimedProbeSequence(private val startedElapsedMs: Long, private val runId: 
                 action = if (step == 3) "left" else "right",
                 actionId = "bg-$runId-${if (step == 3) "left" else "right"}",
                 distanceM = intArrayOf(300, 200, 30, 100)[step],
-                roadName = "后台合成测试", mode = NavProtocol.MODE_WALK, heartbeat = false,
+                roadName = "后台合成测试", mode = NavProtocol.DEFAULT_MODE, heartbeat = false,
             )
         }
         return frames

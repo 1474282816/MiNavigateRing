@@ -26,6 +26,12 @@ object NavProtocol {
     const val MODE_WALK = "walk"
     const val MODE_CYCLE = "cycle"
 
+    /**
+     * Mode assumed before the user picks one. Cycling is the shipped default for this build;
+     * an explicit `walk` written by the user is still honoured.
+     */
+    const val DEFAULT_MODE = MODE_CYCLE
+
     /** Walk advisory threshold, metres (PROJECT_SPEC.md section 6). */
     const val WALK_THRESHOLD_M = 30
 
@@ -61,6 +67,47 @@ object NavProtocol {
 
     val ALLOWED_LINKS: List<String> = listOf(LINK_CONNECTED, LINK_CONNECTING, LINK_DISCONNECTED)
     val ALLOWED_STATUSES: List<String> = listOf(STATUS_IDLE, STATUS_ACTIVE, STATUS_UNRECOGNIZED, STATUS_ENDED)
+
+    /**
+     * Vibration patterns the band is allowed to play on demand.
+     *
+     * `vibrate({mode})` only ships `short` and `long` on this hardware, and `vibrator.start()`
+     * (duration/interval/count) is documented as unsupported on REDMI Watch 6, so the repeated
+     * patterns are stitched together from single `short`/`long` calls on the band side.
+     */
+    const val VIBE_SHORT = "short"
+    const val VIBE_LONG = "long"
+    const val VIBE_SHORT3 = "short3"
+    const val VIBE_LONG2 = "long2"
+    const val VIBE_LONG3 = "long3"
+
+    val ALLOWED_VIBES: List<String> = listOf(VIBE_SHORT, VIBE_LONG, VIBE_SHORT3, VIBE_LONG2, VIBE_LONG3)
+
+    /**
+     * Strength of the *turn reminder* vibration, chosen by the user on the phone.
+     *
+     * The amplitude of the motor is a system setting (`getSystemDefaultMode()`, 0/1/2) and is
+     * read-only for third-party apps on REDMI Watch 6 — `start()`/`stop()`/`getSystemDefaultMode()`
+     * are all documented as unsupported there. What a快应用 can control is how long and how often
+     * the motor is driven, so a "stronger" reminder is stitched from repeated `long` pulses with a
+     * gap short enough that the motor does not fully spin down between them.
+     *
+     * 0 = one short (the original behaviour), 1 = two long pulses, 2 = three long pulses.
+     */
+    const val VIBE_LEVEL_STANDARD = 0
+    const val VIBE_LEVEL_STRONG = 1
+    const val VIBE_LEVEL_MAX = 2
+
+    /** Default is 1: a single short pulse is the weakest thing this hardware can do. */
+    const val DEFAULT_VIBE_LEVEL = VIBE_LEVEL_STRONG
+
+    val ALLOWED_VIBE_LEVELS: List<Int> =
+        listOf(VIBE_LEVEL_STANDARD, VIBE_LEVEL_STRONG, VIBE_LEVEL_MAX)
+
+    /** Anything outside the three levels falls back to the default instead of being clamped silently. */
+    fun normalizeVibeLevel(level: Int?): Int =
+        if (level != null && level in ALLOWED_VIBE_LEVELS) level else DEFAULT_VIBE_LEVEL
+
     val ALLOWED_KINDS: List<String> = listOf(KIND_STATE, KIND_ACK)
 
     fun isAllowedAction(action: String?): Boolean = action == null || action in ALLOWED_ACTIONS
@@ -77,7 +124,8 @@ sealed interface Message {
  * Navigation state report.
  *
  * Field order is fixed by the work order: v, kind, id, sentAtMs, link, navStatus, action,
- * exitNumber, distanceM, roadName, actionId, mode, heartbeat.
+ * exitNumber, distanceM, roadName, actionId, mode, heartbeat, then the optional
+ * transport-only fields (vibe, vibeLevel) which are omitted when null.
  */
 data class StateMessage(
     override val v: Int = NavProtocol.VERSION,
@@ -94,6 +142,22 @@ data class StateMessage(
     val actionId: String? = null,
     val mode: String? = null,
     val heartbeat: Boolean = false,
+    /**
+     * On-demand vibration pattern for the diagnosis screen only (one of [ALLOWED_VIBES]).
+     *
+     * A frame carrying this field is a transport-only ping: the band plays the pattern and
+     * acknowledges it without touching the navigation display. Normal navigation frames always
+     * leave it null, so the production reminder path is unchanged.
+     */
+    val vibe: String? = null,
+    /**
+     * Reminder strength (one of [NavProtocol.ALLOWED_VIBE_LEVELS]).
+     *
+     * Carried on every navigation frame rather than only on the first one, so a band that was
+     * asleep, reinstalled or restarted still learns the current level from the next heartbeat.
+     * Null (older phone build) means the band keeps its current level.
+     */
+    val vibeLevel: Int? = null,
 ) : Message
 
 data class AckMessage(
@@ -125,6 +189,8 @@ object NavCodec {
                 "actionId" to message.actionId,
                 "mode" to message.mode,
                 "heartbeat" to message.heartbeat,
+                "vibe" to message.vibe,
+                "vibeLevel" to message.vibeLevel,
             )
         )
 
@@ -177,6 +243,12 @@ object NavCodec {
             actionId = Json.asString(root["actionId"]),
             mode = Json.asString(root["mode"]),
             heartbeat = Json.asBoolean(root["heartbeat"]) ?: false,
+            // Unknown patterns are dropped here: the band must never receive a vibration
+            // request it would have to guess the meaning of.
+            vibe = Json.asString(root["vibe"])?.takeIf { it in NavProtocol.ALLOWED_VIBES },
+            // An unknown level becomes null (band keeps what it has), never a silent 0.
+            vibeLevel = Json.asInt(root["vibeLevel"])
+                ?.takeIf { it in NavProtocol.ALLOWED_VIBE_LEVELS },
         )
     }
 

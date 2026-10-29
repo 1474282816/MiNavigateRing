@@ -56,7 +56,9 @@ class NavigationEngine {
     private var distanceM: Int? = null
     private var roadName: String? = null
     private var actionId: String? = null
-    private var mode: String? = NavProtocol.MODE_WALK
+    // Before the first report arrives the advisory threshold follows the default cycling mode,
+    // so a cold start never uses the 30 m walking window by accident.
+    private var mode: String? = NavProtocol.DEFAULT_MODE
     private var exitNumber: Int? = null
 
     /** Action identities that already produced their turn reminder. */

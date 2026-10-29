@@ -131,7 +131,8 @@ class AmapNotificationService : NotificationListenerService() {
         val now = System.currentTimeMillis()
         val state = StateMessage(id = "amap-$now", sentAtMs = now, navStatus = instruction.status,
             action = instruction.action, distanceM = instruction.distanceM, roadName = instruction.roadName,
-            exitNumber = instruction.exitNumber, actionId = turns.actionId(instruction), mode = settings.mode)
+            exitNumber = instruction.exitNumber, actionId = turns.actionId(instruction), mode = settings.mode,
+            vibeLevel = settings.vibeLevel)
         settings.save(state)
         latestPublished = state
         if (ProbeRuntime.session.running) {

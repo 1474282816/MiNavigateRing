@@ -32,10 +32,13 @@ import com.minavigatering.probe.navigation.mapNavigationUi
 import com.minavigatering.probe.navigation.miFitnessAppDetailsIntent
 import com.minavigatering.probe.navigation.requestIgnoreBatteryOptimizations
 import com.minavigatering.probe.protocol.NavCodec
+import com.minavigatering.probe.protocol.NavProtocol
 import com.minavigatering.probe.protocol.StateMessage
 import com.minavigatering.probe.transport.ProbeActions
 import com.minavigatering.probe.transport.ProbeForegroundService
 import com.minavigatering.probe.transport.ProbeRuntime
+import com.minavigatering.probe.transport.RuntimeTimeline
+import com.minavigatering.probe.transport.TimelineEvent
 import com.minavigatering.probe.transport.XiaomiWearableTransport
 import kotlinx.coroutines.delay
 
@@ -95,6 +98,7 @@ private fun contentActions(
     launchOrStart: (() -> Unit) -> Unit,
 ) = NavigationContentActions(
     onMode = { value -> selectMode(context, prefs, state, value) },
+    onVibeLevel = { level -> selectVibeLevel(context, prefs, level) },
     onMain = { toggleBridge(context, prefs, state, launchOrStart) },
     onDiagnostics = { state.debug = true },
     settings = navigationSettingActions(context),
@@ -135,6 +139,11 @@ private class NavigationScreenState(prefs: NavigationSettings, transport: Xiaomi
     // loop. Deliberately not read from the message payload link field.
     var nodePresent by mutableStateOf(transport.currentNodeId != null)
 
+    // Age of the newest band ACK in elapsed milliseconds, or null when none was ever received.
+    // Separate from nodePresent on purpose: the node is visible to the SDK whether or not the
+    // watch page is alive, so only an ACK may be rendered as a receipt.
+    var ackAgeMs by mutableStateOf<Long?>(null)
+
     // Milliseconds the notification listener has been continuously unconnected (0 when
     // connected). Distinguishes a granted access permission from an actual live listener binding.
     var listenerDownMs by mutableStateOf(0L)
@@ -161,6 +170,8 @@ private fun navigationUiModel(state: NavigationScreenState, prefs: NavigationSet
     listenerDownMs = state.listenerDownMs,
     amapNavigationPresent = ProbeRuntime.wakePolicy.amapNavigationPresent,
     autoLaunchBand = prefs.autoLaunchBand,
+    bandAckAgeMs = state.ackAgeMs,
+    vibeLevel = prefs.vibeLevel,
 )
 
 /**
@@ -207,12 +218,25 @@ private suspend fun pollNavigationState(
         )
         state.latest = ProbeRuntime.session.latestState
         state.nodePresent = transport.currentNodeId != null
+        state.ackAgeMs = ackAgeOf(SystemClock.elapsedRealtime())
         state.batteryExempt = isIgnoringBatteryOptimizations(context)
         state.restoreFailed = prefs.lastRestoreText.startsWith("failed")
         updateListenerWindow(state)
         delay(1000)
     }
 }
+
+/**
+ * Age of the newest band ACK in elapsed milliseconds, or null when none was ever recorded.
+ *
+ * Elapsed time is used because the timeline stamps `elapsedRealtime`, which keeps counting
+ * through device sleep; a wall-clock difference would jump across a suspend and report a
+ * false age.
+ */
+private fun ackAgeOf(nowElapsedMs: Long): Long? =
+    RuntimeTimeline.shared.lastSeen(TimelineEvent.ACK_RECEIVED)?.let { entry ->
+        (nowElapsedMs - entry.elapsedMs).coerceAtLeast(0L)
+    }
 
 /** Accumulates the continuous listener-down window in elapsed time; zero once it is connected. */
 private fun updateListenerWindow(state: NavigationScreenState) {
@@ -271,8 +295,32 @@ private fun selectMode(
     )
 }
 
-/** The restored snapshot, or a neutral idle state, for a session started by page entry. */
-private fun restoreStartState(prefs: NavigationSettings, mode: String): StateMessage =
+/**
+ * Reminder strength write plus a live UPDATE, so a change takes effect on the next turn
+ * instead of after the next app restart.
+ *
+ * The stored value is normalised first: only 0/1/2 reach the band, never an arbitrary int.
+ */
+private fun selectVibeLevel(
+    context: Context,
+    prefs: NavigationSettings,
+    level: Int,
+) {
+    val normalized = NavProtocol.normalizeVibeLevel(level)
+    prefs.vibeLevel = normalized
+    val current = ProbeRuntime.session.latestState ?: return
+    val updated = current.copy(id = "vibe-${System.currentTimeMillis()}",
+        sentAtMs = System.currentTimeMillis(), vibeLevel = normalized, heartbeat = false)
+    prefs.save(updated)
+    if (!ProbeRuntime.session.running) return
+    context.startService(
+        Intent(context, ProbeForegroundService::class.java)
+            .setAction(ProbeActions.UPDATE)
+            .putExtra(ProbeForegroundService.EXTRA_STATE, NavCodec.encodeToString(updated))
+    )
+}
+
+/** The restored snapshot, or a neutral idle state, for a session started by page entry. */private fun restoreStartState(prefs: NavigationSettings, mode: String): StateMessage =
     prefs.restore(System.currentTimeMillis())
         ?: StateMessage(id = "idle-${System.currentTimeMillis()}", sentAtMs = System.currentTimeMillis(), mode = mode)
 

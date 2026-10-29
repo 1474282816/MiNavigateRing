@@ -21,13 +21,19 @@ fun strippedRecovery(state: StateMessage, now: Long, mode: String): StateMessage
     roadName = null,
     actionId = null,
     heartbeat = false,
-    mode = if (mode == NavProtocol.MODE_CYCLE) NavProtocol.MODE_CYCLE else NavProtocol.MODE_WALK,
+    mode = if (mode == NavProtocol.MODE_WALK) NavProtocol.MODE_WALK else NavProtocol.DEFAULT_MODE,
 )
 
 class NavigationSettings(context: Context) {
     companion object {
         /** Id prefix of a cold-start snapshot, so the screen tells a restore apart from a fault. */
         const val RESTORE_ID_PREFIX = "restore-"
+
+        /**
+         * Mode used before the user ever picks one. Cycling is the default because this build
+         * targets wrist navigation on a bike; a stored `walk` is still honoured once written.
+         */
+        const val DEFAULT_MODE = NavProtocol.DEFAULT_MODE
     }
 
     private val prefs = context.getSharedPreferences("navigation", Context.MODE_PRIVATE)
@@ -35,8 +41,13 @@ class NavigationSettings(context: Context) {
         get() = prefs.getBoolean("enabled", false)
         set(value) { prefs.edit().putBoolean("enabled", value).apply() }
     var mode: String
-        get() = prefs.getString("mode", NavProtocol.MODE_WALK).let {
-            if (it == NavProtocol.MODE_CYCLE) it else NavProtocol.MODE_WALK }
+        // Only two values are legal; anything else (missing, corrupted, older build) falls back
+        // to DEFAULT_MODE instead of silently becoming walking.
+        get() = if (prefs.getString("mode", DEFAULT_MODE) == NavProtocol.MODE_WALK) {
+            NavProtocol.MODE_WALK
+        } else {
+            NavProtocol.MODE_CYCLE
+        }
         set(value) { require(value in listOf(NavProtocol.MODE_WALK, NavProtocol.MODE_CYCLE))
             prefs.edit().putString("mode", value).apply() }
     /** Last background restore outcome: a short de-identified word set, never a raw message. */
@@ -51,6 +62,20 @@ class NavigationSettings(context: Context) {
     var autoLaunchBand: Boolean
         get() = prefs.getBoolean("autoLaunchBand", true)
         set(value) { prefs.edit().putBoolean("autoLaunchBand", value).apply() }
+
+    /**
+     * Reminder strength sent to the band (0 标准 / 1 强 / 2 最强).
+     *
+     * Amplitude itself cannot be raised from an app — that is the watch's own
+     * 设置 → 声音与振动 → 振动强度 switch — so this only changes how long and how often
+     * the motor is driven. A stored value outside the three levels falls back to the default.
+     */
+    var vibeLevel: Int
+        get() = NavProtocol.normalizeVibeLevel(prefs.getInt("vibeLevel", NavProtocol.DEFAULT_VIBE_LEVEL))
+        set(value) {
+            val level = NavProtocol.normalizeVibeLevel(value)
+            prefs.edit().putInt("vibeLevel", level).apply()
+        }
     /** Last auto launch outcome: a short de-identified word set, never a raw message. */
     var lastAutoLaunchText: String
         get() = prefs.getString("lastAutoLaunchText", "") ?: ""

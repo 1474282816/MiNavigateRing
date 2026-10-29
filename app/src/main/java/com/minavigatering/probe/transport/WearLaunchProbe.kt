@@ -143,7 +143,7 @@ class WearLaunchProbe(
             }
         }
 
-    /** Sends one bare idle walk frame and maps the transport phases onto the shared session. */
+    /** Sends one bare idle cycle frame and maps the transport phases onto the shared session. */
     private fun sendProbe() {
         probeSeq += 1
         val id = "launch-probe-" + System.currentTimeMillis().toString(16) + "-" + probeSeq
@@ -152,7 +152,7 @@ class WearLaunchProbe(
             sentAtMs = System.currentTimeMillis(),
             link = NavProtocol.LINK_CONNECTED,
             navStatus = NavProtocol.STATUS_IDLE,
-            mode = NavProtocol.MODE_WALK,
+            mode = NavProtocol.DEFAULT_MODE,
             heartbeat = false,
         )
         ProbeRuntime.session.rememberInstruction(id)

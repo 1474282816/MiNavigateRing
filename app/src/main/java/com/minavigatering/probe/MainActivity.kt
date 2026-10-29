@@ -7,12 +7,14 @@ import android.os.Build
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
+import android.util.Log
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.rememberScrollState
@@ -231,6 +233,61 @@ fun ProbeScreen(transport: XiaomiWearableTransport) {
         refreshFromSession()
     }
 
+    /**
+     * Diagnosis only: asks the band to play one vibration pattern.
+     *
+     * Deliberately bypasses [send]. A vibration request is not navigation state — routing it
+     * through [send] would store it as `session.latestState` (whose heartbeat would re-send it
+     * every 5 s) and would push a turn-less frame through the navigation engine, blanking the
+     * home screen. Here the frame only travels over the transport and is acked normally.
+     */
+    fun sendVibe(pattern: String) {
+        require(pattern in NavProtocol.ALLOWED_VIBES) { "unsupported vibe '$pattern'" }
+        val now = System.currentTimeMillis()
+        val frame = StateMessage(
+            id = "vibe-$pattern-$now",
+            sentAtMs = now,
+            link = NavProtocol.LINK_CONNECTED,
+            navStatus = NavProtocol.STATUS_IDLE,
+            mode = NavProtocol.DEFAULT_MODE,
+            vibe = pattern,
+        )
+        // Identity is registered so the ack can be attributed to this frame.
+        session.rememberInstruction(frame.id)
+        lastEnvelope = NavCodec.encodeToString(frame)
+        Log.i(VIBE_LOG_TAG, "send pattern=$pattern id=${frame.id}")
+        val result = transport.sendState(frame) { phase ->
+            when (phase) {
+                is SendPhase.Queued -> session.onQueued(phase.messageId, phase.nodeId)
+
+                is SendPhase.TaskSucceeded -> session.onTaskSuccess(phase.messageId)
+
+                is SendPhase.TaskFailed -> session.onTaskFailure(phase.messageId, phase.reason)
+            }
+            Log.i(VIBE_LOG_TAG, "phase=${phase.javaClass.simpleName} pattern=$pattern")
+            runOnUiThreadCompat { refreshFromSession() }
+        }
+        when (result) {
+            is SendResult.Queued -> {
+                linkText = NavProtocol.LINK_CONNECTED
+                session.onQueued(result.messageId, result.nodeId)
+            }
+
+            is SendResult.NoNode -> {
+                linkText = NavProtocol.LINK_CONNECTING
+                session.onNoNode(result.reason)
+            }
+
+            is SendResult.Failed -> {
+                linkText = NavProtocol.LINK_DISCONNECTED
+                session.onSubmitFailed(result.reason)
+            }
+        }
+        lastStatus = "震动:$pattern"
+        Log.i(VIBE_LOG_TAG, "result=$result pattern=$pattern")
+        refreshFromSession()
+    }
+
     Column(
         modifier = Modifier
             .fillMaxSize()
@@ -287,7 +344,7 @@ fun ProbeScreen(transport: XiaomiWearableTransport) {
                     distanceM = 300,
                     roadName = "合成道路",
                     actionId = "probe-left-1",
-                    mode = NavProtocol.MODE_WALK,
+                    mode = NavProtocol.DEFAULT_MODE,
                     heartbeat = false,
                 )
             )
@@ -305,7 +362,7 @@ fun ProbeScreen(transport: XiaomiWearableTransport) {
                     distanceM = 200,
                     roadName = "合成道路",
                     actionId = "probe-left-1",
-                    mode = NavProtocol.MODE_WALK,
+                    mode = NavProtocol.DEFAULT_MODE,
                     heartbeat = false,
                 )
             )
@@ -323,7 +380,7 @@ fun ProbeScreen(transport: XiaomiWearableTransport) {
                     distanceM = 150,
                     roadName = "合成道路",
                     actionId = "probe-mystery-1",
-                    mode = NavProtocol.MODE_WALK,
+                    mode = NavProtocol.DEFAULT_MODE,
                     heartbeat = false,
                 )
             )
@@ -341,7 +398,7 @@ fun ProbeScreen(transport: XiaomiWearableTransport) {
                     distanceM = null,
                     roadName = null,
                     actionId = null,
-                    mode = NavProtocol.MODE_WALK,
+                    mode = NavProtocol.DEFAULT_MODE,
                     heartbeat = false,
                 )
             )
@@ -359,11 +416,37 @@ fun ProbeScreen(transport: XiaomiWearableTransport) {
                     distanceM = null,
                     roadName = null,
                     actionId = null,
-                    mode = NavProtocol.MODE_WALK,
+                    mode = NavProtocol.DEFAULT_MODE,
                     heartbeat = false,
                 )
             )
         }) { Text("空闲（navStatus=idle，无虚构转向）") }
+
+        // Vibration bench. The band plays the pattern and keeps showing whatever it already
+        // showed, so this can be pressed in the middle of a real navigation.
+        Text("体感震动测试（手环震动，不改显示）", style = MaterialTheme.typography.titleSmall)
+        Text(
+            "手环侧 vibrate() 只开放 short / long，振幅由手表自己的「设置 → 声音与振动 → 振动强度」" +
+                "决定，第三方应用改不了；这里能改的是驱动时长与次数。",
+            style = MaterialTheme.typography.bodySmall,
+        )
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            Button(onClick = { sendVibe(NavProtocol.VIBE_SHORT) }) { Text("短震（1×短）") }
+            Button(onClick = { sendVibe(NavProtocol.VIBE_LONG) }) { Text("长震（1×长）") }
+        }
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            Button(onClick = { sendVibe(NavProtocol.VIBE_SHORT3) }) { Text("三连短震（3×短）") }
+            Button(onClick = { sendVibe(NavProtocol.VIBE_LONG2) }) { Text("双长震（2×长）") }
+        }
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            Button(onClick = { sendVibe(NavProtocol.VIBE_LONG3) }) { Text("三长震（3×长，最强档实际效果）") }
+        }
+        Text(
+            "顺序建议：短震 → 长震 → 双长震 → 三长震。短震是旧版提醒的强度，" +
+                "后面三个是新的三档提醒实际会震的组合；如果三长震仍然弱，先把手表振动强度改成「强劲」，" +
+                "再判断是不是电机本身的问题。",
+            style = MaterialTheme.typography.bodySmall,
+        )
 
         Text("最近一次本地报文：", style = MaterialTheme.typography.titleSmall)
         Text(lastEnvelope ?: "（尚未发送）", style = MaterialTheme.typography.bodySmall)
@@ -375,6 +458,12 @@ fun ProbeScreen(transport: XiaomiWearableTransport) {
         Text(ackText, style = MaterialTheme.typography.bodySmall)
     }
 }
+
+/**
+ * Logcat tag for the diagnosis vibration bench, so one `adb logcat -s MiRingVibe` shows
+ * whether a pattern left the phone, what the SDK phase was, and whether a node was found.
+ */
+private const val VIBE_LOG_TAG = "MiRingVibe"
 
 /** Runs [block] on the UI thread when the composable is hosted by an activity. */
 private fun runOnUiThreadCompat(block: () -> Unit) {

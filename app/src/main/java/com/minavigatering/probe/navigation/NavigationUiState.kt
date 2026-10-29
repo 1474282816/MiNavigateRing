@@ -35,12 +35,18 @@ data class NavigationUiModel(
     val roadName: String?,
     val exitText: String?,
     val modeLabel: String,
+    /**
+     * Current reminder strength label, shown next to the strength segment so the user sees
+     * which of 标准 / 强 / 最强 the band is actually playing.
+     */
+    val vibeLabel: String,
     val guidance: String,
     val showAsValidInstruction: Boolean,
     /**
      * Two-line bridge/node status for the main screen. `bandLine` is null when the bridge is
-     * off or the foreground session is not running. Node presence is reported as presence
-     * only: a band ACK is not verified, so no line claims receipt.
+     * off or the foreground session is not running. Node presence alone is reported as
+     * presence only; receipt is claimed exclusively from a band ACK that arrived within
+     * [BAND_ACK_FRESH_MS], and an older ACK is printed with its age instead.
      */
     val bridgeLine: String,
     val bandLine: String?,
@@ -82,7 +88,7 @@ private val PHASE_SENTENCES: Map<NavigationPhase, String> = mapOf(
 
 /** Waiting guidance when the home switch promises the band page will open by itself. */
 private const val WAITING_AUTO_LAUNCH_SENTENCE =
-    "在高德开始步行或骑行导航，手环导航页会自动打开。"
+    "在高德开始骑行或步行导航，手环导航页会自动打开。"
 
 /** Unavailable: Amap is navigating but the action is empty or outside the 14 allowed labels. */
 private const val UNAVAILABLE_UNKNOWN_ACTION_SENTENCE =
@@ -115,6 +121,28 @@ private fun unavailableSentence(latest: StateMessage?, amapNavigationPresent: Bo
     else -> UNAVAILABLE_NO_NOTICE_SENTENCE
 }
 
+/**
+ * How long a received band ACK may be old and still be reported as a live receipt.
+ *
+ * The band acknowledges every real data frame, and the foreground loop sends one per second
+ * while navigation runs, so a healthy link refreshes this well inside the window. Anything
+ * older is reported as a stale timestamp instead of a live claim: the node being reachable
+ * does not prove the watch page is still listening.
+ */
+const val BAND_ACK_FRESH_MS = 15_000L
+
+/**
+ * 标准 / 强 / 最强 — the three reminder strengths the band knows how to play.
+ *
+ * The band drives the motor for longer at a higher level; it cannot raise the amplitude,
+ * which is the watch's own 设置 → 声音与振动 → 振动强度 switch.
+ */
+fun vibeLabelOf(level: Int): String = when (level) {
+    NavProtocol.VIBE_LEVEL_STANDARD -> "标准"
+    NavProtocol.VIBE_LEVEL_MAX -> "最强"
+    else -> "强"
+}
+
 fun mapNavigationUi(
     listenerAccessGranted: Boolean,
     bridgeEnabled: Boolean,
@@ -128,8 +156,16 @@ fun mapNavigationUi(
     amapNavigationPresent: Boolean = false,
     /** Home switch: whether starting navigation also launches the band navigation page. */
     autoLaunchBand: Boolean = false,
+    /**
+     * Age of the newest band ACK in milliseconds, or null when no ACK was ever received.
+     * This is the only input that may make [NavigationUiModel.bandLine] claim receipt.
+     */
+    bandAckAgeMs: Long? = null,
+    /** Reminder strength the phone is sending (see [NavProtocol.ALLOWED_VIBE_LEVELS]). */
+    vibeLevel: Int = NavProtocol.DEFAULT_VIBE_LEVEL,
 ): NavigationUiModel {
     val modeLabel = if (selectedMode == NavProtocol.MODE_CYCLE) "骑行" else "步行"
+    val vibeLabel = vibeLabelOf(vibeLevel)
 
     // Bridge first, then foreground session, then node presence. Deliberately independent of
     // the permission/latest/link/ACK inputs.
@@ -138,10 +174,15 @@ fun mapNavigationUi(
         !sessionRunning -> "导航桥启动中"
         else -> "导航桥已开启"
     }
+    // A node only proves the phone side can see the watch. Receipt is claimed only from an
+    // actual ACK: fresh within BAND_ACK_FRESH_MS prints a receipt, an older one prints its age,
+    // and having no ACK at all keeps the original wording.
     val bandLine = when {
         !bridgeEnabled || !sessionRunning -> null
         !bandNodePresent -> "手环：未发现，正在连接"
-        else -> "手环：已发现，尚未确认收到"
+        bandAckAgeMs == null -> "手环：已发现，尚未确认收到"
+        bandAckAgeMs <= BAND_ACK_FRESH_MS -> "手环：已收到回执"
+        else -> "手环：已发现，最近回执 ${bandAckAgeMs / 1000} 秒前"
     }
 
     val phase = when {
@@ -182,6 +223,7 @@ fun mapNavigationUi(
             roadName = null,
             exitText = null,
             modeLabel = modeLabel,
+            vibeLabel = vibeLabel,
             guidance = sentence,
             showAsValidInstruction = false,
             bridgeLine = bridgeLine,
@@ -217,6 +259,7 @@ fun mapNavigationUi(
         roadName = roadName,
         exitText = exitText,
         modeLabel = modeLabel,
+        vibeLabel = vibeLabel,
         guidance = sentence,
         showAsValidInstruction = true,
         bridgeLine = bridgeLine,
