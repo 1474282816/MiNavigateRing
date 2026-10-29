@@ -399,3 +399,67 @@ test("app.ux parses a frame string once and the inbound ring stays bounded", () 
   assert.strictEqual(cleared.count, 0);
   assert.strictEqual(cleared.retained, 0);
 });
+
+// --- Diagnosis vibration frames ---------------------------------------------------------
+
+test("a vibration frame is acked but leaves the navigation display untouched", () => {
+  session.resetForTest();
+  const activeFrame = session.onMessage(
+    active({ actionId: "v1", distanceM: 80, id: "amap-1" }),
+    T0
+  );
+  assert.strictEqual(activeFrame.display.title, "左转");
+  assert.strictEqual(activeFrame.display.distanceM, 80);
+
+  const vibe = session.onMessage({ id: "vibe-short3-1", navStatus: "idle", vibe: "short3" }, T0 + 500);
+  // The pattern is handed up for playback...
+  assert.strictEqual(vibe.vibe, "short3");
+  // ...the reminder vibration stays silent (one buzz, not two)...
+  assert.strictEqual(vibe.vibrate, false);
+  // ...the ack is still produced so the phone sees the frame landed...
+  assert.strictEqual(vibe.ack.refId, "vibe-short3-1");
+  // ...and the turn is still on screen afterwards.
+  const current = session.current();
+  assert.strictEqual(current.title, "左转");
+  assert.strictEqual(current.distanceM, 80);
+});
+
+test("an unknown vibration pattern is treated as a normal frame, not as a request", () => {
+  session.resetForTest();
+  session.onMessage(active({ actionId: "v2", distanceM: 60, id: "amap-2" }), T0);
+  const odd = session.onMessage({ id: "vibe-mega-1", navStatus: "idle", vibe: "mega" }, T0 + 500);
+  assert.strictEqual(odd.vibe, null);
+  // A plain idle frame still clears the display: the unknown pattern got no special path.
+  assert.strictEqual(odd.display.title, "暂无导航");
+});
+
+// --- Reminder strength tracking --------------------------------------------------------
+
+test("the session remembers the last legal level and ignores later frames without one", () => {
+  session.resetForTest();
+  // Before any frame the session reports the strong default, never 0 (silence).
+  assert.strictEqual(session.vibeLevel(), 1);
+  session.onMessage({ id: "amap-1", navStatus: "active", action: "left", vibeLevel: 2 }, T0);
+  assert.strictEqual(session.vibeLevel(), 2);
+  // An idle frame carries no level: the choice must survive it.
+  session.onMessage({ id: "idle-1", navStatus: "idle" }, T0 + 1000);
+  assert.strictEqual(session.vibeLevel(), 2);
+  // Back to standard is a real change, not a falsy value that gets skipped.
+  session.onMessage({ id: "amap-2", navStatus: "active", action: "right", vibeLevel: 0 }, T0 + 2000);
+  assert.strictEqual(session.vibeLevel(), 0);
+});
+
+test("an illegal level leaves the previous strength in force", () => {
+  session.resetForTest();
+  session.onMessage({ id: "amap-1", navStatus: "active", action: "left", vibeLevel: 0 }, T0);
+  session.onMessage({ id: "amap-2", navStatus: "active", action: "left", vibeLevel: 9 }, T0 + 100);
+  assert.strictEqual(session.vibeLevel(), 0);
+});
+
+test("the session hands app.ux a ready-to-play burst", () => {
+  session.resetForTest();
+  session.onMessage({ id: "amap-1", navStatus: "active", action: "left", vibeLevel: 2 }, T0);
+  const steps = session.reminderPattern();
+  assert.deepStrictEqual(steps.map((s) => s.mode), ["long", "long", "long"]);
+  assert.deepStrictEqual(steps.map((s) => s.atMs), [0, 800, 1600]);
+});

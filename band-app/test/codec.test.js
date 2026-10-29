@@ -228,3 +228,79 @@ test("reminder histories are shared unless an id is appended, capped at 32", () 
   assert.strictEqual(quiet.remindedTurn, advisory.remindedTurn);
   assert.strictEqual(quiet.remindedAdvisory, advisory.remindedAdvisory);
 });
+
+// --- Diagnosis vibration channel -------------------------------------------------------
+
+test("vibration patterns are whitelisted, unknown patterns are ignored", () => {
+  assert.strictEqual(codec.vibePatternOf({ vibe: "short" }), "short");
+  assert.strictEqual(codec.vibePatternOf({ vibe: "long" }), "long");
+  assert.strictEqual(codec.vibePatternOf({ vibe: "short3" }), "short3");
+  assert.strictEqual(codec.vibePatternOf({ vibe: "long2" }), "long2");
+  // Anything the firmware does not know must never be guessed into short/long.
+  assert.strictEqual(codec.vibePatternOf({ vibe: "mega" }), null);
+  assert.strictEqual(codec.vibePatternOf({ vibe: "" }), null);
+  assert.strictEqual(codec.vibePatternOf({ vibe: 3 }), null);
+  assert.strictEqual(codec.vibePatternOf({}), null);
+});
+
+test("a vibration frame never changes the reduced display", () => {
+  const before = codec.reduceDisplay(
+    codec.emptyDisplay(),
+    { navStatus: "active", action: "left", distanceM: 80, roadName: "中山路", actionId: "a1", sentAtMs: T0 },
+    T0
+  );
+  // decodeMessage keeps the request separate from every display field.
+  const decoded = codec.decodeMessage({ vibe: "short3", navStatus: "idle", id: "vibe-1" });
+  assert.strictEqual(decoded.vibe, "short3");
+  assert.strictEqual(decoded.action, undefined);
+  // A vibration frame carries no action identity, so it can never remind.
+  const stillBefore = codec.reduceDisplay(
+    before,
+    { navStatus: "idle", vibe: "short3", id: "vibe-1", sentAtMs: T0 + 1000 },
+    T0 + 1000
+  );
+  assert.strictEqual(stillBefore.vibrate, false);
+});
+
+// --- Reminder strength -----------------------------------------------------------------
+
+test("reminder patterns grow with the level and never exceed three pulses", () => {
+  // 0 标准: the original single short pulse.
+  assert.deepStrictEqual(codec.reminderPatternOf(0), [{ mode: "short", atMs: 0 }]);
+  // 1 强 and 2 最强 repeat the long pulse, which is the hardest thing this motor can do.
+  assert.deepStrictEqual(codec.reminderPatternOf(1), [
+    { mode: "long", atMs: 0 },
+    { mode: "long", atMs: codec.REMINDER_GAP_MS }
+  ]);
+  assert.deepStrictEqual(codec.reminderPatternOf(2), [
+    { mode: "long", atMs: 0 },
+    { mode: "long", atMs: codec.REMINDER_GAP_MS },
+    { mode: "long", atMs: codec.REMINDER_GAP_MS * 2 }
+  ]);
+  // The gap must stay wider than a long pulse, otherwise two beats merge into one.
+  assert.ok(codec.REMINDER_GAP_MS >= 600);
+});
+
+test("an absent or illegal level keeps the default instead of becoming silent", () => {
+  const fallback = codec.reminderPatternOf(null);
+  assert.strictEqual(fallback.length, 2);
+  assert.deepStrictEqual(codec.reminderPatternOf(9), fallback);
+  assert.deepStrictEqual(codec.reminderPatternOf("强"), fallback);
+  // 0 is a legal level, not a falsy value to be ignored.
+  assert.deepStrictEqual(codec.normalizeVibeLevel(0), 0);
+  assert.strictEqual(codec.normalizeVibeLevel(3), null);
+  assert.strictEqual(codec.normalizeVibeLevel(undefined), null);
+});
+
+test("the level travels on the frame without touching the display fields", () => {
+  const decoded = codec.decodeMessage({ id: "amap-1", navStatus: "active", action: "left", vibeLevel: 2 });
+  assert.strictEqual(decoded.vibeLevel, 2);
+  assert.strictEqual(decoded.vibe, null);
+  // A frame without the field decodes to null, which the session reads as "no change".
+  assert.strictEqual(codec.decodeMessage({ id: "amap-2" }).vibeLevel, null);
+});
+
+test("long3 is an allowed diagnosis pattern", () => {
+  assert.ok(codec.VIBE_PATTERNS.has("long3"));
+  assert.strictEqual(codec.vibePatternOf({ vibe: "long3" }), "long3");
+});

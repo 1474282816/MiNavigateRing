@@ -95,14 +95,14 @@ class NavCodecTest {
         val text = NavCodec.encodeToString(
             StateMessage(id = "probe-1", sentAtMs = 1, heartbeat = false)
         )
-        val keys = Regex("\"(v|kind|id|sentAtMs|link|navStatus|action|exitNumber|distanceM|roadName|actionId|mode|heartbeat)\":")
+        val keys = Regex("\"(v|kind|id|sentAtMs|link|navStatus|action|exitNumber|distanceM|roadName|actionId|mode|heartbeat|vibe)\":")
             .findAll(text)
             .map { it.groupValues[1] }
             .toList()
         assertEquals(
             listOf(
                 "v", "kind", "id", "sentAtMs", "link", "navStatus", "action",
-                "exitNumber", "distanceM", "roadName", "actionId", "mode", "heartbeat",
+                "exitNumber", "distanceM", "roadName", "actionId", "mode", "heartbeat", "vibe",
             ),
             keys,
         )

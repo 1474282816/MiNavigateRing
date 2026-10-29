@@ -97,6 +97,43 @@ class NavigationUiStateTest {
         assertEquals("\u624b\u73af\uff1a\u5df2\u53d1\u73b0\uff0c\u5c1a\u672a\u786e\u8ba4\u6536\u5230", bandNodePresent.bandLine)
     }
 
+    /**
+     * The band line may claim receipt only from a real ACK. A fresh ACK prints the receipt, an
+     * ACK older than [BAND_ACK_FRESH_MS] prints its age instead of pretending to be live, and
+     * no ACK at all keeps the original "尚未确认收到" wording — node presence never counts.
+     */
+    @Test
+    fun bandLineClaimsReceiptOnlyFromAFreshAck() {
+        fun model(ackAgeMs: Long?) = mapNavigationUi(
+            listenerAccessGranted = true,
+            bridgeEnabled = true,
+            sessionRunning = true,
+            bandNodePresent = true,
+            selectedMode = NavProtocol.MODE_WALK,
+            latest = activeLeft(),
+            bandAckAgeMs = ackAgeMs,
+        )
+
+        assertEquals("手环：已收到回执", model(0L).bandLine)
+        assertEquals("手环：已收到回执", model(BAND_ACK_FRESH_MS).bandLine)
+        // 15 001 ms: one millisecond past the window, so the age is printed instead.
+        assertEquals("手环：已发现，最近回执 15 秒前", model(BAND_ACK_FRESH_MS + 1).bandLine)
+        assertEquals("手环：已发现，最近回执 125 秒前", model(125_000L).bandLine)
+        assertEquals("手环：已发现，尚未确认收到", model(null).bandLine)
+
+        // No node means no line at all, even when a stale ACK is still on record.
+        val noNode = mapNavigationUi(
+            listenerAccessGranted = true,
+            bridgeEnabled = true,
+            sessionRunning = true,
+            bandNodePresent = false,
+            selectedMode = NavProtocol.MODE_WALK,
+            latest = activeLeft(),
+            bandAckAgeMs = 0L,
+        )
+        assertEquals("手环：未发现，正在连接", noNode.bandLine)
+    }
+
     @Test
     fun missingOrClosedStatesNeverInventAManeuver() {
         // active 且 action=null：UNAVAILABLE，不默认直行
